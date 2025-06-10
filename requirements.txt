@@ -1,20 +1,15 @@
-# 核心依赖
 streamlit>=1.22.0
 pandas>=1.5.0
 numpy>=1.22.0
 matplotlib>=3.5.0
 joblib>=1.1.0
 scipy>=1.8.0
-
-# 机器学习库（用于加载模型）
 scikit-learn>=1.0.0
 xgboost>=1.6.0
 lightgbm>=3.3.0
 catboost>=1.0.0
-
-# 数据处理和可视化
 plotly>=5.10.0
-
-# 其他工具库
 python-dateutil>=2.8.0
 pytz>=2022.1
+gdown>=4.6.0
+
