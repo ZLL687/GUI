@@ -9,7 +9,6 @@ import warnings
 import io
 import os
 import requests
-import gdown
 from pathlib import Path
 
 warnings.filterwarnings('ignore')
@@ -36,19 +35,43 @@ SCALER_PATH = MODEL_DIR / "scaler_y.pkl"
 MODEL_ID = "1Q6dxyO44L9M6J9QtvGvffCRAszJmVUen"
 SCALER_ID = "1Y2QcDlfBc7oZD_5jPZWTO8ZA3n3-qvQ6"
 
-def download_from_gdrive(file_id, output_path):
-    """Download file from Google Drive using gdown"""
-    # Create directory if it doesn't exist
+def download_file(url, output_path):
+    """使用requests下载文件"""
+    # 创建目录（如果不存在）
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     if not output_path.exists():
-        with st.spinner(f"Downloading {output_path.name} from Google Drive..."):
+        with st.spinner(f"Downloading {output_path.name}..."):
             try:
-                # Direct download URL
-                url = f"https://drive.google.com/uc?id={file_id}&export=download"
+                # 创建会话以处理cookies
+                session = requests.Session()
                 
-                # Use gdown for large files (handles the confirmation page)
-                gdown.download(url, str(output_path), quiet=False)
+                # 获取初始响应
+                response = session.get(url, stream=True)
+                
+                # 检查是否有下载警告（针对大文件）
+                for key, value in response.cookies.items():
+                    if key.startswith('download_warning'):
+                        # 添加确认参数到URL
+                        url = f"{url}&confirm={value}"
+                        response = session.get(url, stream=True)
+                        break
+                
+                # 下载文件并显示进度
+                total_size = int(response.headers.get('content-length', 0))
+                progress_bar = st.progress(0)
+                
+                # 写入文件
+                with open(output_path, 'wb') as f:
+                    downloaded = 0
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size:
+                                # 更新进度条
+                                progress = min(downloaded / total_size, 1.0)
+                                progress_bar.progress(progress)
                 
                 if output_path.exists() and output_path.stat().st_size > 0:
                     st.success(f"✅ Successfully downloaded {output_path.name}")
@@ -139,15 +162,12 @@ st.markdown('''
     }
     </style>''', unsafe_allow_html=True)
 
-# Check if we need to install gdown
-try:
-    import gdown
-except ImportError:
-    st.info("Installing required dependencies...")
-    import subprocess
-    subprocess.check_call(["pip", "install", "gdown"])
-    import gdown
-    st.success("Dependencies installed successfully!")
+# 添加一个提示，说明用户可能需要手动上传模型文件
+st.markdown('''
+<div class="warning-box">
+⚠️ <strong>注意</strong>：如果自动下载模型文件失败，请使用"手动上传"选项上传模型文件。
+</div>
+''', unsafe_allow_html=True)
 
 # Model loading section
 st.markdown('<div class="upload-container">', unsafe_allow_html=True)
@@ -196,18 +216,54 @@ if use_manual_upload:
 else:
     # Download and load models
     if not use_local_models:
-        # Download model files
-        model_downloaded = download_from_gdrive(MODEL_ID, MODEL_PATH)
-        scaler_downloaded = download_from_gdrive(SCALER_ID, SCALER_PATH)
+        # 使用requests下载文件
+        model_url = f"https://drive.google.com/uc?id={MODEL_ID}&export=download"
+        scaler_url = f"https://drive.google.com/uc?id={SCALER_ID}&export=download"
+        
+        model_downloaded = download_file(model_url, MODEL_PATH)
+        scaler_downloaded = download_file(scaler_url, SCALER_PATH)
         
         if not (model_downloaded and scaler_downloaded):
             st.error("❌ Failed to download model files. Please try manual upload instead.")
-            st.stop()
-    
-    # Load models from files
-    with st.spinner("Loading models..."):
-        voting_model = load_model(MODEL_PATH)
-        scaler_y = load_model(SCALER_PATH)
+            # 自动切换到手动上传模式
+            use_manual_upload = True
+            st.warning("Switched to manual upload mode. Please upload the model files.")
+            
+            col_upload1, col_upload2 = st.columns(2)
+            
+            with col_upload1:
+                voting_file = st.file_uploader(
+                    "Upload Voting Ensemble Model File", 
+                    type=['pkl'], 
+                    key="voting_model_fallback",
+                    help="Please upload voting_regressor.pkl file"
+                )
+            
+            with col_upload2:
+                scaler_file = st.file_uploader(
+                    "Upload Y-value Scaler File", 
+                    type=['pkl'], 
+                    key="scaler_y_fallback",
+                    help="Please upload scaler_y.pkl file"
+                )
+            
+            if voting_file is None or scaler_file is None:
+                st.stop()
+            
+            # Load models from uploaded files
+            with st.spinner("Loading models from uploaded files..."):
+                voting_model = load_model_from_upload(voting_file)
+                scaler_y = load_model_from_upload(scaler_file)
+        else:
+            # Load models from downloaded files
+            with st.spinner("Loading models..."):
+                voting_model = load_model(MODEL_PATH)
+                scaler_y = load_model(SCALER_PATH)
+    else:
+        # Load models from existing local files
+        with st.spinner("Loading models..."):
+            voting_model = load_model(MODEL_PATH)
+            scaler_y = load_model(SCALER_PATH)
 
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -604,50 +660,4 @@ with result_col2:
     offset_y = (np.max(smoothed_Nu) - np.min(smoothed_Nu)) * 0.1
     ax.annotate(f'Peak: {peak_Nu:.2f} kN\nStrain: {peak_strain:.6f}',
                 xy=(peak_strain, peak_Nu),
-                xytext=(peak_strain + offset_x, peak_Nu + offset_y),
-                arrowprops=dict(arrowstyle='->', color='black', lw=1.5),
-                fontsize=11,
-                bbox=dict(boxstyle="round,pad=0.4", facecolor="yellow", alpha=0.8, edgecolor='black'))
-    
-    # Chart beautification
-    ax.set_xlabel('Strain', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Axial Compression Capacity Nu (kN)', fontsize=14, fontweight='bold')
-    title_text = 'Axial Compression Capacity-Strain Curve Prediction'
-    if apply_constraint:
-        title_text += ' (with Physical Constraint)'
-    ax.set_title(title_text, fontsize=16, fontweight='bold', pad=20)
-    ax.legend(fontsize=12, frameon=True, shadow=True)
-    ax.grid(True, alpha=0.3, linestyle='--')
-    
-    # Set chart style
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_linewidth(2)
-    ax.spines['bottom'].set_linewidth(2)
-    
-    # Set axis range
-    y_margin = (np.max(smoothed_Nu) - np.min(smoothed_Nu)) * 0.1
-    ax.set_ylim(np.min(smoothed_Nu) - y_margin, np.max(smoothed_Nu) + y_margin)
-    
-    plt.tight_layout()
-    st.pyplot(fig, use_container_width=True)
-
-# Results summary
-st.markdown("### 🎯 Prediction Summary")
-summary_col1, summary_col2, summary_col3 = st.columns(3)
-
-with summary_col1:
-    st.success(f"🏆 **Peak Axial Compression Capacity**\n{peak_Nu:.2f} kN")
-
-with summary_col2:
-    st.info(f"📍 **Peak Corresponding Strain**\n{peak_strain:.6f}")
-
-with summary_col3:
-    ultimate_strain_idx = int(len(strain_values) * 0.9)  # 90% position strain
-    ultimate_Nu = smoothed_Nu[ultimate_strain_idx]
-    st.warning(f"📈 **Ultimate State Capacity**\n{ultimate_Nu:.2f} kN")
-
-# Physical constraint summary
-if apply_constraint:
-    st.markdown("### ⚖️ Physical Constraint Summary")
-    constraint_summary_col1, constraint_summary_
+                
