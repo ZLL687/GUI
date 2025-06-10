@@ -7,6 +7,10 @@ import math
 from scipy.signal import savgol_filter
 import warnings
 import io
+import os
+import requests
+import gdown
+from pathlib import Path
 
 warnings.filterwarnings('ignore')
 
@@ -22,6 +26,49 @@ st.set_page_config(
     page_icon="⭕",
     layout="wide"
 )
+
+# Model file download URLs and paths
+MODEL_DIR = Path("models")
+MODEL_PATH = MODEL_DIR / "voting_regressor.pkl"
+SCALER_PATH = MODEL_DIR / "scaler_y.pkl"
+
+# Google Drive file IDs extracted from the links
+MODEL_ID = "1Q6dxyO44L9M6J9QtvGvffCRAszJmVUen"
+SCALER_ID = "1Y2QcDlfBc7oZD_5jPZWTO8ZA3n3-qvQ6"
+
+def download_from_gdrive(file_id, output_path):
+    """Download file from Google Drive using gdown"""
+    # Create directory if it doesn't exist
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    if not output_path.exists():
+        with st.spinner(f"Downloading {output_path.name} from Google Drive..."):
+            try:
+                # Direct download URL
+                url = f"https://drive.google.com/uc?id={file_id}&export=download"
+                
+                # Use gdown for large files (handles the confirmation page)
+                gdown.download(url, str(output_path), quiet=False)
+                
+                if output_path.exists() and output_path.stat().st_size > 0:
+                    st.success(f"✅ Successfully downloaded {output_path.name}")
+                    return True
+                else:
+                    st.error(f"❌ Download failed: {output_path.name} is empty or not found")
+                    return False
+            except Exception as e:
+                st.error(f"❌ Download error: {e}")
+                return False
+    return True
+
+def load_model(model_path):
+    """Load model from file path"""
+    try:
+        model = joblib.load(model_path)
+        return model
+    except Exception as e:
+        st.error(f"Model loading failed: {e}")
+        return None
 
 def load_model_from_upload(uploaded_file):
     """Load model from uploaded file"""
@@ -92,53 +139,77 @@ st.markdown('''
     }
     </style>''', unsafe_allow_html=True)
 
-# Model file upload area
+# Check if we need to install gdown
+try:
+    import gdown
+except ImportError:
+    st.info("Installing required dependencies...")
+    import subprocess
+    subprocess.check_call(["pip", "install", "gdown"])
+    import gdown
+    st.success("Dependencies installed successfully!")
+
+# Model loading section
 st.markdown('<div class="upload-container">', unsafe_allow_html=True)
-st.markdown("### 📁 Model File Upload")
-st.markdown("Please upload the trained model files:")
+st.markdown("### 📁 Model Files")
 
-col_upload1, col_upload2 = st.columns(2)
+# Check if model files exist locally
+models_exist_locally = MODEL_PATH.exists() and SCALER_PATH.exists()
 
-with col_upload1:
-    voting_file = st.file_uploader(
-        "Upload Voting Ensemble Model File", 
-        type=['pkl'], 
-        key="voting_model",
-        help="Please upload voting_regressor.pkl file"
-    )
+if models_exist_locally:
+    st.success("✅ Model files found locally. Using cached models.")
+    use_local_models = True
+else:
+    st.info("Model files not found locally. They will be automatically downloaded.")
+    use_local_models = False
 
-with col_upload2:
-    scaler_file = st.file_uploader(
-        "Upload Y-value Scaler File", 
-        type=['pkl'], 
-        key="scaler_y",
-        help="Please upload scaler_y.pkl file"
-    )
+# Add option for manual upload (as fallback)
+use_manual_upload = st.checkbox("Use manual upload instead", value=False)
+
+if use_manual_upload:
+    col_upload1, col_upload2 = st.columns(2)
+    
+    with col_upload1:
+        voting_file = st.file_uploader(
+            "Upload Voting Ensemble Model File", 
+            type=['pkl'], 
+            key="voting_model",
+            help="Please upload voting_regressor.pkl file"
+        )
+    
+    with col_upload2:
+        scaler_file = st.file_uploader(
+            "Upload Y-value Scaler File", 
+            type=['pkl'], 
+            key="scaler_y",
+            help="Please upload scaler_y.pkl file"
+        )
+    
+    if voting_file is None or scaler_file is None:
+        st.warning("⚠️ Please upload the required model files before making predictions")
+        st.stop()
+    
+    # Load models from uploaded files
+    with st.spinner("Loading models from uploaded files..."):
+        voting_model = load_model_from_upload(voting_file)
+        scaler_y = load_model_from_upload(scaler_file)
+else:
+    # Download and load models
+    if not use_local_models:
+        # Download model files
+        model_downloaded = download_from_gdrive(MODEL_ID, MODEL_PATH)
+        scaler_downloaded = download_from_gdrive(SCALER_ID, SCALER_PATH)
+        
+        if not (model_downloaded and scaler_downloaded):
+            st.error("❌ Failed to download model files. Please try manual upload instead.")
+            st.stop()
+    
+    # Load models from files
+    with st.spinner("Loading models..."):
+        voting_model = load_model(MODEL_PATH)
+        scaler_y = load_model(SCALER_PATH)
 
 st.markdown('</div>', unsafe_allow_html=True)
-
-# Check if files are uploaded
-if voting_file is None or scaler_file is None:
-    st.warning("⚠️ Please upload the required model files before making predictions")
-    st.markdown("""
-    ### 📋 Required Files:
-    1. **voting_regressor.pkl** - Voting ensemble regression model
-    2. **scaler_y.pkl** - Y-value normalizer
-    
-    ### 🔧 How to obtain these files:
-    - After running your provided training code, these files will be automatically saved in the training script directory
-    - Make sure to find these two .pkl files after training completion and upload them
-    
-    ### ⚠️ Feature Names Description:
-    Model expects space-separated feature names:
-    - ['D', 't', 'L/D', 'Helix Angle', 'fcuAc', 'fyAs', 'h/l', 'Concrete Types', 'Confinement Factor', 'Strain']
-    """)
-    st.stop()
-
-# Load models
-with st.spinner("Loading models..."):
-    voting_model = load_model_from_upload(voting_file)
-    scaler_y = load_model_from_upload(scaler_file)
 
 if voting_model is None or scaler_y is None:
     st.error("❌ Model loading failed, please check file format")
@@ -579,142 +650,4 @@ with summary_col3:
 # Physical constraint summary
 if apply_constraint:
     st.markdown("### ⚖️ Physical Constraint Summary")
-    constraint_summary_col1, constraint_summary_col2, constraint_summary_col3 = st.columns(3)
-    
-    with constraint_summary_col1:
-        n_constrained = np.sum(constraint_applied)
-        st.metric("Points with Constraint Applied", n_constrained)
-    
-    with constraint_summary_col2:
-        if n_constrained > 0:
-            max_adjustment = np.max(np.abs(Nu_predicted_raw - Nu_predicted))
-            st.metric("Maximum Constraint Adjustment (kN)", f"{max_adjustment:.2f}")
-        else:
-            st.metric("Maximum Constraint Adjustment (kN)", "0.00")
-    
-    with constraint_summary_col3:
-        st.metric("Constraint Tolerance", f"{constraint_tolerance:.2e}")
-
-# Display detailed input parameter summary
-with st.expander("📋 Detailed Input Parameter Summary", expanded=False):
-    summary_data = {
-        "Parameter Name": feature_names,
-        "Value": [D, t, L_D_ratio, helix_angle, fcuAc, fyAs, h_l_ratio, rubber_replacement_ratio, confinement_factor, "Variable Sequence"],
-        "Unit": ["mm", "mm", "-", "°", "N·mm²", "N·mm²", "-", "-", "-", "-"],
-        "Description": [
-            "Steel tube outer diameter", "Steel tube wall thickness", "Length-diameter ratio", "Helix angle", 
-            "Concrete strength × area", "Steel strength × area", "Corrugation height ratio", 
-            "Rubber replacement ratio (0-1)", "Confinement factor", "Strain variable"
-        ]
-    }
-    summary_df = pd.DataFrame(summary_data)
-    st.dataframe(summary_df, use_container_width=True)
-
-# Display cross-sectional area calculation details
-with st.expander("📐 Cross-sectional Area Calculation Details", expanded=False):
-    st.markdown("### Cross-sectional Area Calculation Formulas and Results")
-    
-    calc_col1, calc_col2 = st.columns(2)
-    
-    with calc_col1:
-        st.markdown("**Concrete Cross-sectional Area Ac:**")
-        st.latex(r"A_c = \frac{\pi \cdot (D-t)^2}{4}")
-        st.write(f"= π × ({D:.1f} - {t:.1f})² / 4")
-        st.write(f"= π × {(D-t):.1f}² / 4")
-        st.write(f"= {Ac:.0f} mm²")
-        
-    with calc_col2:
-        st.markdown("**Steel Cross-sectional Area As:**")
-        st.latex(r"A_s = \pi \cdot D \cdot t \cdot \alpha")
-        st.write(f"= π × {D:.1f} × {t:.1f} × {amplification_factor:.3f}")
-        st.write(f"= {As:.0f} mm²")
-        st.write(f"where α = {amplification_factor:.3f} (corrugation amplification factor)")
-        
-    st.markdown("**Composite Parameters:**")
-    st.write(f"- fcuAc = {fcu:.1f} × {Ac:.0f} = {fcuAc:.0f} N·mm²")
-    st.write(f"- fyAs = {fy:.1f} × {As:.0f} = {fyAs:.0f} N·mm²")
-    st.write(f"- Steel ratio = As/Ac = {As:.0f}/{Ac:.0f} = {steel_ratio:.4f}")
-    st.write(f"- Confinement factor = (As/Ac) × fy/fcu = {steel_ratio:.4f} × {fy:.1f}/{fcu:.1f} = {confinement_factor:.3f}")
-
-# Add usage instructions
-with st.expander("📖 Usage Instructions", expanded=False):
-    st.markdown("""
-    ### 🔧 Parameter Description
-    
-    **Geometric Parameters:**
-    - **D**: Steel tube outer diameter, unit: mm
-    - **t**: Steel tube wall thickness, unit: mm  
-    - **L**: Total component length, unit: mm
-    - **h**: Corrugation ridge height, unit: mm
-    - **l**: Distance between adjacent corrugations, unit: mm
-    - **K**: Total number of spiral corrugations
-    
-    **Material Parameters:**
-    - **fcu**: Concrete cube compressive strength, unit: MPa
-    - **fy**: Steel yield strength, unit: MPa
-    - **Rubber Replacement Ratio**: Volume ratio of rubber particles replacing concrete aggregate, range 0-1
-    
-    **Strain Settings:**
-    - **Start Strain**: Analysis initial strain value
-    - **End Strain**: Analysis final strain value
-    - **Number of Points**: Number of strain sequence points for analysis
-    
-    ### 📊 Model Features
-    
-    **Derived Parameters (automatically calculated):**
-    - **L/D**: Length-diameter ratio
-    - **Helix Angle**: Spiral corrugation angle (degrees)
-    - **fcuAc**: Concrete strength × cross-sectional area (N·mm²)
-    - **fyAs**: Steel strength × cross-sectional area (N·mm²)
-    - **h/l**: Corrugation height ratio
-    - **Confinement Factor**: Steel confinement coefficient
-    
-    **Amplification Factor Rules:**
-    - h/l ≈ 0.191 (13/68): factor = 1.084
-    - h/l ≈ 0.333 (25/75): factor = 1.247
-    - h/l = 0.200 (25/125): factor = 1.07
-    - h/l ≈ 0.333 (50/150): factor = 1.179
-    - h/l = 0.275 (55/200): factor = 1.142
-    - h = 0: factor = 1.0
-    - Other cases: factor = 1.0
-    
-    ### 🎯 Output Results
-    
-    **Prediction Results:**
-    - **Load-Strain Curve**: Complete axial compression capacity vs strain relationship
-    - **Peak Capacity**: Maximum axial compression capacity and corresponding strain
-    - **Ultimate State Capacity**: Capacity at 90% strain range
-    - **Statistical Information**: Maximum, minimum, average, and range of capacity values
-    
-    **Data Export:**
-    - CSV format download with strain and capacity data
-    - Timestamped filename for easy management
-    
-    ### ⚠️ Important Notes
-    
-    **Parameter Constraints:**
-    - All geometric parameters and material strengths must be > 0
-    - Wall thickness must be < diameter/2
-    - Start strain must be < end strain
-    - Rubber replacement ratio must be between 0-1
-    
-    **Model Accuracy:**
-    - Model trained on specific parameter ranges
-    - Best accuracy within training data range
-    - Extrapolation beyond training range may reduce accuracy
-    
-    **Curve Smoothing:**
-    - Savitzky-Golay filter available for noise reduction
-    - Adjustable window size and polynomial order
-    - Option to display both original and smoothed curves
-    """)
-
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: #666; font-size: 14px; margin-top: 2rem;">
-🏗️ Corrugated Steel Tube Confined Rubber Concrete Pier Axial Compression Capacity Prediction System<br>
-Powered by Machine Learning Ensemble Models (XGBoost + LightGBM + CatBoost)<br>
-For research and engineering applications
-</div>
-""", unsafe_allow_html=True)
+    constraint_summary_col1, constraint_summary_
